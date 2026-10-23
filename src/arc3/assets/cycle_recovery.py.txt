@@ -1,0 +1,378 @@
+
+
+
+# === ARC3 v6: cycle-gated stagnation hypothesis switching ===
+# Core safety rule:
+#   action count alone -> NEVER triggers
+#   no-progress alone  -> NEVER triggers
+#   repeated deaths alone -> NEVER triggers
+# A recent repeated/cyclic board state is REQUIRED before any checkpoint.
+import inspect as _arc3_cg_inspect
+
+
+def _arc3_cg_env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _arc3_cg_env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _arc3_cg_env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _arc3_cg_frame_hash(frame: Any) -> str:
+    if frame is None:
+        return ""
+    grid = getattr(frame, "grid", None)
+    if grid is None:
+        return ""
+    try:
+        return str(_interior_state_hash(grid))
+    except Exception:
+        try:
+            rows = tuple(tuple(row) for row in grid)
+            return str(hash(rows))
+        except Exception:
+            return ""
+
+
+def _arc3_cg_extract(bound_arguments: dict[str, Any]) -> tuple[Any, int | None, dict[str, Any], Any]:
+    previous = bound_arguments.get("previous_step_summary")
+    if not isinstance(previous, dict):
+        previous = {}
+
+    frame = bound_arguments.get("current_frame")
+    level = bound_arguments.get("current_level")
+    if level is None and frame is not None:
+        level = getattr(frame, "level", None)
+    if level is None:
+        level = previous.get("level")
+
+    action_num = bound_arguments.get("action_num")
+    if action_num is None:
+        for key in ("end_action_num", "action_num", "step"):
+            value = previous.get(key)
+            if value is not None:
+                action_num = value
+                break
+    if action_num is None and frame is not None:
+        action_num = getattr(frame, "step", None)
+
+    try:
+        action_num = int(action_num) if action_num is not None else None
+    except (TypeError, ValueError):
+        action_num = None
+
+    return level, action_num, previous, frame
+
+
+def _arc3_cg_record(action_num: int, previous: dict[str, Any], frame: Any) -> dict[str, Any]:
+    try:
+        executed = max(0, int(previous.get("executed_count") or 0))
+    except (TypeError, ValueError):
+        executed = 0
+
+    gameplay_changed = previous.get("gameplay_changed")
+    no_progress = bool(executed > 0 and gameplay_changed is False)
+
+    guard_stops = previous.get("guard_stops")
+    guard_count = len(guard_stops) if isinstance(guard_stops, list) else 0
+
+    no_op_stops = previous.get("no_op_stops")
+    noop_stop_count = len(no_op_stops) if isinstance(no_op_stops, list) else 0
+
+    return {
+        "action_num": int(action_num),
+        "state_hash": _arc3_cg_frame_hash(frame),
+        "executed": executed,
+        "no_progress": no_progress,
+        "game_over": bool(previous.get("game_over")),
+        "guard_stops": guard_count,
+        "noop_stops": noop_stop_count,
+    }
+
+
+def _arc3_cg_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
+    hashes = [str(r.get("state_hash") or "") for r in records if r.get("state_hash")]
+    unique = len(set(hashes))
+    repeat_ratio = ((len(hashes) - unique) / len(hashes)) if hashes else 0.0
+    current_hash = hashes[-1] if hashes else ""
+    current_visits = sum(h == current_hash for h in hashes) if current_hash else 0
+
+    # Count adjacent and short-lag revisits. This helps distinguish a genuine
+    # A->B->A / A->B->C->A cycle from one accidental duplicate.
+    revisit_pairs = 0
+    short_cycle_hits = 0
+    for i, h in enumerate(hashes):
+        if i > 0 and h == hashes[i - 1]:
+            revisit_pairs += 1
+        for lag in (2, 3):
+            if i >= lag and h == hashes[i - lag]:
+                short_cycle_hits += 1
+                break
+
+    window_actions = sum(max(0, int(r.get("executed") or 0)) for r in records)
+    no_progress_actions = sum(
+        max(0, int(r.get("executed") or 0))
+        for r in records
+        if r.get("no_progress")
+    )
+    no_progress_ratio = (
+        no_progress_actions / window_actions if window_actions > 0 else 0.0
+    )
+
+    return {
+        "observed_turns": len(records),
+        "observed_states": len(hashes),
+        "unique_states": unique,
+        "repeat_state_ratio": round(repeat_ratio, 4),
+        "current_state_visits": current_visits,
+        "adjacent_repeat_pairs": revisit_pairs,
+        "short_cycle_hits": short_cycle_hits,
+        "window_actions": window_actions,
+        "no_progress_actions": no_progress_actions,
+        "no_progress_action_ratio": round(no_progress_ratio, 4),
+        "game_over_turns": sum(bool(r.get("game_over")) for r in records),
+        "guard_stops": sum(int(r.get("guard_stops") or 0) for r in records),
+        "noop_stops": sum(int(r.get("noop_stops") or 0) for r in records),
+    }
+
+
+def _arc3_cg_should_trigger(
+    metrics: dict[str, Any],
+    *,
+    strong: bool = False,
+) -> tuple[bool, list[str]]:
+    observed_states = int(metrics.get("observed_states") or 0)
+    repeat_ratio = float(metrics.get("repeat_state_ratio") or 0.0)
+    current_visits = int(metrics.get("current_state_visits") or 0)
+    short_cycle_hits = int(metrics.get("short_cycle_hits") or 0)
+    adjacent_pairs = int(metrics.get("adjacent_repeat_pairs") or 0)
+
+    window_actions = int(metrics.get("window_actions") or 0)
+    no_progress_ratio = float(metrics.get("no_progress_action_ratio") or 0.0)
+    deaths = int(metrics.get("game_over_turns") or 0)
+    guard_stops = int(metrics.get("guard_stops") or 0)
+    noop_stops = int(metrics.get("noop_stops") or 0)
+
+    # ---------------- Mandatory cycle gate ----------------
+    # If recent states are all novel, return immediately. No other signal may
+    # override this. This is the key v6 fix for tn36.
+    if observed_states < 5:
+        return False, []
+
+    weak_repeat_threshold = _arc3_cg_env_float(
+        "ARC3_CYCLE_MIN_REPEAT_RATIO",
+        0.34,
+    )
+    strong_repeat_threshold = _arc3_cg_env_float(
+        "ARC3_CYCLE_STRONG_REPEAT_RATIO",
+        0.50,
+    )
+
+    cycle_core = (
+        repeat_ratio >= weak_repeat_threshold
+        or current_visits >= 3
+        or short_cycle_hits >= 2
+        or adjacent_pairs >= 2
+    )
+    if not cycle_core:
+        return False, []
+
+    strong_cycle = (
+        repeat_ratio >= strong_repeat_threshold
+        or current_visits >= 4
+        or short_cycle_hits >= 3
+    )
+
+    # ---------------- Corroborating evidence ----------------
+    # These can strengthen a cycle diagnosis, but can NEVER trigger alone.
+    no_progress_support = (
+        window_actions >= (10 if strong else 8)
+        and no_progress_ratio >= (0.30 if strong else 0.22)
+    )
+    death_support = deaths >= 1
+    guard_support = (guard_stops + noop_stops) >= 1
+
+    reasons: list[str] = ["state_cycle"]
+    if strong_cycle:
+        reasons.append("strong_state_cycle")
+    if no_progress_support:
+        reasons.append("no_progress")
+    if death_support:
+        reasons.append("game_over")
+    if guard_support:
+        reasons.append("guard_or_noop_stop")
+
+    # Stage 1: a strong cycle is sufficient; a weaker cycle needs one extra
+    # symptom. Stage 2 is deliberately stricter: the cycle must be strong and
+    # must have corroborating evidence after the first checkpoint.
+    support = no_progress_support or death_support or guard_support
+    if strong:
+        return bool(strong_cycle and support), reasons
+    return bool(strong_cycle or support), reasons
+
+
+def _arc3_cg_checkpoint_text(stage: int, actions_in_level: int, reasons: list[str]) -> str:
+    reason_text = ", ".join(reasons)
+    if stage == 1:
+        return (
+            "STRATEGY CHECKPOINT: recent board states are repeating in a concrete "
+            f"cycle after {actions_in_level} actions ({reason_text}). This is not "
+            "just a long route: the observed state sequence itself is revisiting "
+            "earlier states. Do not merely continue the same plan. Separate direct "
+            "facts from unsupported assumptions, form at least two materially "
+            "different explanations for the loop, and choose the smallest 1-3 "
+            "action probe whose outcomes distinguish them. If the probe contradicts "
+            "the current hypothesis, explicitly abandon it and update the plan. "
+            "Do not RESET solely because of this checkpoint."
+        )
+    return (
+        "STRATEGY RESET: a strong state cycle has reappeared after the earlier "
+        f"checkpoint, now at {actions_in_level} actions ({reason_text}). Stop "
+        "optimizing the same route or mechanic. Re-ground from current_frame, "
+        "history, segmentation, and observed action effects; identify which "
+        "unsupported assumption keeps recreating the loop; choose a materially "
+        "different hypothesis and test it with the shortest discriminating probe. "
+        "Keep directly supported facts. Do not RESET solely because of this message."
+    )
+
+
+if not getattr(ToolAgent, "_arc3_cycle_gated_wrapper_installed", False):
+    _arc3_cg_original_build_user_prompt = ToolAgent._build_user_prompt
+    _arc3_cg_signature = _arc3_cg_inspect.signature(_arc3_cg_original_build_user_prompt)
+
+    def _arc3_cg_build_user_prompt(self, *args: Any, **kwargs: Any) -> str:
+        prompt = _arc3_cg_original_build_user_prompt(self, *args, **kwargs)
+        if not _arc3_cg_env_bool("ARC3_CYCLE_HYPOTHESIS_SWITCH", False):
+            return prompt
+
+        try:
+            bound = _arc3_cg_signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            arguments = dict(bound.arguments)
+        except (TypeError, ValueError):
+            return prompt
+
+        level, action_num, previous, frame = _arc3_cg_extract(arguments)
+        if action_num is None:
+            return prompt
+
+        state = getattr(self, "_arc3_cycle_gated_state", None)
+        if not isinstance(state, dict) or state.get("level") != level:
+            state = {
+                "level": level,
+                "baseline": action_num,
+                "stage": 0,
+                "records": [],
+                "last_recorded_action_num": None,
+                "last_trigger_action": None,
+            }
+            self._arc3_cycle_gated_state = state
+
+        baseline = int(state.get("baseline", action_num) or 0)
+        if action_num < baseline:
+            state = {
+                "level": level,
+                "baseline": action_num,
+                "stage": 0,
+                "records": [],
+                "last_recorded_action_num": None,
+                "last_trigger_action": None,
+            }
+            self._arc3_cycle_gated_state = state
+            baseline = action_num
+
+        if state.get("last_recorded_action_num") != action_num:
+            state["records"].append(_arc3_cg_record(action_num, previous, frame))
+            state["last_recorded_action_num"] = action_num
+
+        window_turns = max(5, _arc3_cg_env_int("ARC3_CYCLE_WINDOW_TURNS", 10))
+        max_keep = max(window_turns * 3, 30)
+        state["records"] = list(state["records"][-max_keep:])
+
+        actions_in_level = max(0, action_num - baseline)
+        try:
+            level_num = int(level)
+        except (TypeError, ValueError):
+            level_num = 2
+
+        min_actions = max(1, _arc3_cg_env_int("ARC3_CYCLE_MIN_ACTIONS", 30))
+        if level_num <= 1:
+            min_actions = max(
+                min_actions,
+                _arc3_cg_env_int("ARC3_CYCLE_LEVEL1_MIN_ACTIONS", 42),
+            )
+
+        stage = int(state.get("stage", 0) or 0)
+        if stage == 0 and actions_in_level < min_actions:
+            return prompt
+
+        recent = list(state["records"][-window_turns:])
+
+        # For stage 2, evaluate only evidence accumulated after stage 1 where
+        # possible, and require a minimum gap.
+        if stage >= 1:
+            last_trigger = state.get("last_trigger_action")
+            second_gap = max(10, _arc3_cg_env_int("ARC3_CYCLE_SECOND_GAP", 24))
+            if last_trigger is None or action_num - int(last_trigger) < second_gap:
+                return prompt
+            post_trigger = [
+                r for r in recent
+                if int(r.get("action_num") or 0) > int(last_trigger)
+            ]
+            if len(post_trigger) >= 5:
+                recent = post_trigger
+
+        metrics = _arc3_cg_metrics(recent)
+        trigger, reasons = _arc3_cg_should_trigger(metrics, strong=(stage >= 1))
+        if not trigger:
+            return prompt
+
+        triggered_stage = 1 if stage == 0 else 2
+        if triggered_stage > 2:
+            return prompt
+
+        state["stage"] = triggered_stage
+        state["last_trigger_action"] = action_num
+
+        event = {
+            "stage": triggered_stage,
+            "level": level,
+            "actions_in_level": actions_in_level,
+            "action_num": action_num,
+            "trigger_mode": "cycle_gated_v6",
+            "trigger_reasons": reasons,
+            "trigger_metrics": metrics,
+        }
+        events = getattr(self, "_strategy_checkpoint_events", None)
+        if not isinstance(events, list):
+            events = []
+            self._strategy_checkpoint_events = events
+        events.append(event)
+
+        try:
+            log.warning(
+                "cycle-gated strategy checkpoint stage=%d level=%s actions_in_level=%d reasons=%s metrics=%s",
+                triggered_stage, level, actions_in_level, reasons, metrics,
+            )
+        except Exception:
+            pass
+
+        suffix = _arc3_cg_checkpoint_text(triggered_stage, actions_in_level, reasons)
+        return f"{prompt}\n{suffix}" if isinstance(prompt, str) else prompt
+
+    ToolAgent._build_user_prompt = _arc3_cg_build_user_prompt
+    ToolAgent._arc3_cycle_gated_wrapper_installed = True
+# === end ARC3 v6 cycle-gated stagnation wrapper ===
