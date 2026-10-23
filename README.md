@@ -1,172 +1,80 @@
-# ARC3 Agent 推理系统
+# ARC3 Agent Infra
 
-**作者：陈守杰（Clair-ChenShoujie）**
+**单卡离线大模型推理 · 多会话 Agent 运行时 · 自动化评测**
 
-面向 ARC-AGI-3 交互式推理任务，我实现了一套单卡离线 Agent 系统，将大模型推理服务、Python 工具执行、会话状态管理、局部恢复策略与实验观测串成完整运行流程。
+我为 ARC-AGI-3 构建的长程 Agent 推理系统：在一张 RTX PRO 6000 上运行量化大模型，让多个游戏会话共享推理服务，并完成“观察 → 推理 → Python 工具执行 → 环境反馈”的持续交互。
 
-当前归档对应 **Kaggle Public Score 24.59** 的实现，作为后续 Agent Infra 与推理系统优化的基线。
+项目重点是把有限的显存、推理时间和上下文预算，转化为更多有效的游戏探索与解题动作。
 
-## 版本与入口
+## 本地评测表现
 
-| 项目 | 内容 |
-|---|---|
-| 代码入口 | [arc3_2459.ipynb](arc3_2459.ipynb) |
-| Kaggle Notebook | [notebook06e2a38c0a / Version 1](https://www.kaggle.com/code/clairechenxyz/notebook06e2a38c0a?scriptVersionId=356766364) |
-| Script Version ID | `356766364` |
-| 官方提交成绩 | **24.59** |
-| 运行硬件 | NVIDIA RTX PRO 6000 |
-| 默认开发模式 | `lf52` 单游戏、5分钟 smoke test |
-| 正式策略配置 | `noop_recovery_v91` |
-| 归档日期 | 2026-10-23 |
+**46.39 平均分 · 7/25 游戏通关 · 603.78 token/s · 94.24% 缓存 token 复用**
 
-代码以单个 Notebook 交付，包含全部 **13个代码单元**：配置、内嵌 harness patch、离线环境初始化、模型启动、实验运行器、监控和评测入口。归档保留代码与执行顺序，移除历史运行输出；本文统一提供项目与运行说明。
-
-## 系统架构
-
-```mermaid
-flowchart TD
-    A["运行入口与模式配置"] --> B["共享模型服务"]
-    A --> C["游戏会话调度"]
-    C --> D["Agent 观察与推理"]
-    D --> B
-    B --> D
-    D --> E["Python 工具执行"]
-    E --> F["游戏环境与动作反馈"]
-    F --> D
-    E --> G["函数修复与局部恢复"]
-    G --> D
-    C --> H["遥测与实验报告"]
-    E --> H
-```
-
-### 1. 单卡离线推理服务
-
-使用 SGLang / Pennyroyal v2.5.3 部署 Qwen3.8-Flash-Next，结合 W4A16 权重量化、FP8 KV Cache、NEXTN/MTP 投机解码、分块预填充和 CUDA Graph，在单卡上承载长上下文 Agent 请求。
-
-启动流程包含模型分片校验、checkpoint 预读取、离线依赖安装、Python 3.12 解释器选择、虚拟环境兼容性检查及服务启动诊断。
-
-| 推理配置 | 当前值 |
+| 指标 | 本地测评结果 |
 |---|---:|
-| 服务上下文长度 | 139264 tokens |
-| Agent 上下文窗口 | 131072 tokens |
-| 上下文 drain 阈值 | 59392 tokens |
-| 最大运行请求数 | 10 |
-| 活跃游戏流上限 | 10 |
-| Chunked prefill | 8192 |
-| 静态显存比例 | 0.96 |
-| KV Cache 类型 | fp8_e4m3 |
-| CUDA Graph 最大 decode batch | 10 |
-| 调度策略 | lpm |
-| MTP steps | 3 |
+| 评测集 | ARC-AGI-3 Public25，离线运行，1 pass |
+| 平均得分 | **46.3908** |
+| 完整通关 | **7 / 25（28%）** |
+| 完成关卡 | **104 / 183** |
+| 生成吞吐（按作业墙钟时间） | **603.78 token/s** |
+| Actor 缓存 token 复用比例 | **94.24%** |
+| 生成 tokens（作业汇总） | **4,425,369** |
+| 游戏运行耗时 | **2小时2分9秒** |
 
-游戏会话数量、活跃游戏流和推理引擎请求数是三个独立配置。正式运行通过调度器组织会话，再由共享服务执行模型请求。
+数据来自项目的完整本地实验 **357355935**。当前模块化源码从 **356766364** 拆分；实验日志、计算口径和版本对应关系见 [评测记录](docs/benchmarks.md)。
 
-### 2. Agent 工具执行与状态管理
+## 使用了什么技术，解决了什么问题
 
-Agent 根据当前画面与历史动作反馈进行推理，生成 Python 工具调用，执行动作并读取新状态。实现围绕长程执行中的函数可用性、状态一致性和重复无效操作展开：
+| 目标 | 技术实现 | 系统效果 |
+|---|---|---|
+| **单卡容纳模型与长上下文** | W4A16 权重量化 + FP8 KV Cache | 降低权重与 KV 存储开销；单张 RTX PRO 6000 部署共享模型服务 |
+| **提高生成效率** | NEXTN/MTP 投机解码 + CUDA Graph | 批量验证候选 token，减少逐步解码与 kernel launch 开销；完整系统本地吞吐 **603.78 token/s** |
+| **减少重复预填充** | Radix 前缀缓存 + LPM 调度 | 复用 Agent 连续请求的公共前缀；Actor 缓存 token 占比 **94.24%** |
+| **承载长程交互** | 128K Agent 窗口 + 上下文 drain | 支持较长动作历史，在上下文达到阈值时整理历史，控制输入增长 |
+| **控制共享推理负载** | 游戏会话准入 + 10路活跃流 + Chunked Prefill | 限制同时争用 GPU 的请求；分块处理长输入 |
+| **提升执行可靠性** | Function Repair + game 级函数持久化 + No-op Recovery | 修复工具函数问题，隔离会话状态，在重复无效动作时触发局部恢复 |
+| **让优化可以复盘** | 独立实验 worker + 请求/游戏遥测 + 资源监控 | 自动生成逐游戏结果、错误统计、配置快照与实验组对照 |
 
-- **Function Repair**：为工具执行中的函数问题提供修复路径。
-- **持久化函数作用域**：按 game 管理 helper 生命周期。
-- **会话隔离**：切换 game/session 时重置局部恢复历史与 checkpoint 状态。
-- **局部无效动作恢复**：从真实动作反馈统计 no-op，在局部停滞时向下一轮 prompt 加入恢复提示。
+表中的吞吐和缓存比例是整套系统的测量值；单项技术收益通过后续消融比较。
 
-当前正式 profile 开启 Function Repair 与 No-op Recovery v9.1，关闭全局 Step Verification、旧版 Hypothesis/Cycle Switching 及 shadow/strategy diagnostics。
+## 工程结构
 
-### 3. No-op Recovery v9.1
-
-当前 level 已执行至少24个真实动作后，检查最近最多24个动作的窗口。窗口至少包含16个动作、至少4个 no-op，且 no-op 比例达到0.18时，触发一次局部恢复提示。
-
-同一 game/session 的同一 level 最多触发一次；最新动作导致 game-over 时跳过。恢复提示引导 Agent 重新结合画面与动作效果定位问题，并尝试有区别的 probe。该模块本身不执行动作或 RESET。
-
-### 4. 实验运行与可观测性
-
-实验运行器复用共享模型服务，为各实验组启动独立 worker，等待模型就绪后计入开发测试预算，并记录缓存刷新状态。
-
-观测数据覆盖游戏结果、动作数量、模型 tokens、工具错误、no-op、函数保留问题、checkpoint 事件及排队耗时。系统监控线程独立采集 RAM、GPU显存、磁盘、线程和文件描述符，便于定位长时间运行中的资源问题。
-
-主要输出包括：
-
-| 输出 | 用途 |
+| 目录 / 模块 | 职责 |
 |---|---|
-| `comparison.csv` | 实验组汇总 |
-| `per_game.csv` | 逐游戏指标 |
-| `paired_delta.csv` / `pairwise_summary.json` | 配对实验比较（对应模式生成时） |
-| `telemetry.jsonl` | 执行事件记录 |
-| `effective_config.json` | 实际生效配置 |
-| `run.log` | worker 日志 |
-| 游戏轨迹与诊断页面 | 回看执行过程 |
+| `src/arc3/serving.py` | 推理引擎安装、模型检查与服务启动 |
+| `src/arc3/environment.py` | 离线环境、策略配置与 harness 接入 |
+| `src/arc3/benchmark.py` | 游戏评测与正式运行入口 |
+| `src/arc3/experiment.py` | 实验调度、遥测、结果汇总 |
+| `src/arc3/monitor.py` | CPU / 内存 / 显存 / 磁盘监控 |
+| `src/arc3/assets/` | Harness patch 与局部恢复逻辑 |
+| `configs/` | 可编辑的运行与推理配置 |
+| `benchmarks/` | 本地评测汇总与结果数据 |
+| `tests/` | 配置、预算、入口路由与清理回归测试 |
+| `notebooks/kaggle_entry.ipynb` | Kaggle 轻量启动入口 |
 
-## 如何运行
+原始 `arc3_2459.ipynb` 保留作历史快照。后续开发直接修改 `src/` 和 `configs/`。
 
-### 环境与输入
+## 快速开始
 
-在 Kaggle 中导入 Notebook，选择 **GPU RTX PRO 6000**，保留以下五项输入：
+先在普通 CPU 环境检查配置与运行测试：
 
-1. ARC Prize 2026 - ARC-AGI-3 competition。
-2. `pennyroyal-v253` 离线依赖包。
-3. `TAAF Kaggle Source Bundle (copy)`。
-4. `Intel-Qwen3.8-Flash-Next-W4A16-AutoRound`，Version 1。
-5. `albucino-Qwen3.8-Flash-Next-drafter`，Version 1。
-
-最方便的复现方式是在上面的固定版本页面复制 Notebook，保留输入挂载，再导入本仓库代码。模型权重、wheelhouse、competition 环境及原始 source bundle 由 Kaggle inputs 提供。
-
-推理环境需要 Python 3.12。启动代码会查找可用解释器；也可通过 `ARC3_INFERENCE_PYTHON` 指向已挂载的兼容解释器。
-
-### 快速检查
-
-默认首个配置单元为：
-
-```python
-DEV_MODE = "smoke"
-SUBMISSION_PROFILE = "noop_recovery_v91"
-DEV_PROFILES = ("noop_recovery_v91",)
-DEV_GAME_PREFIXES = ("lf52",)
-DEV_MINUTES_PER_ARM = 5
-DEV_REPEATS = 1
-DEV_ACTIVE_STREAMS = 1
+```bash
+PYTHONPATH=src python -m arc3 --config configs/baseline.json --check
+PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-依序 Run All。模型加载与准备完成后执行5分钟游戏测试，再生成实验报告。
+在 Kaggle RTX PRO 6000 环境附加模型、wheelhouse、source bundle 和比赛输入后运行：
 
-### 完整评测与正式提交
+```bash
+PYTHONPATH=src python -m arc3 --config configs/baseline.json
+```
 
-- 开发完整评测：将 `DEV_MODE` 设为 `"full"`，检查游戏数、passes及预算后运行。
-- 正式比赛：由 Kaggle competition rerun 设置 `KAGGLE_IS_COMPETITION_RERUN`，代码自动切换到 gateway、正式 profile 与比赛调度。
-- 开发运行生成的占位 `submission.parquet` 仅用于 Notebook 输出流程；正式成绩由 competition rerun 产生。
-- 24.59 是固定版本的官方 Public Score；页面中的5分钟 smoke 输出是另一种测试口径。
+默认执行 **lf52 / 5分钟 / 1路活跃流** 的 smoke test。完整评测、挂载路径与输出说明见 [运行指南](docs/running.md)。
 
-## 代码导航
+## 文档
 
-以下编号仅计算代码单元，从1开始：
+- [本地评测数据与统计口径](docs/benchmarks.md)
+- [运行指南与配置](docs/running.md)
+- [系统架构与依赖](docs/architecture.md)
 
-| 单元 | 内容 |
-|---|---|
-| 1 | 开发模式与正式 profile |
-| 2 | 内嵌 `harness-changes.patch` |
-| 3 | 路径、环境变量、补丁应用与运行模式 |
-| 4 | checkpoint 预缓存 |
-| 5 | 安装 ARC runtime |
-| 6 | 导入 source bundle |
-| 7 | Pennyroyal 推理服务启动 |
-| 8 | `arc3_experiment.py` 实验运行器与遥测 |
-| 9 | 加载 benchmark |
-| 10 | 并发、passes、单局时间等配置 |
-| 11 | 系统资源监控 |
-| 12 | 开发实验或正式 benchmark 执行 |
-| 13 | 结果表与诊断展示 |
-
-## 工程定位
-
-这个项目聚焦 **长程 Agent 的推理运行时与实验基础设施**：离线部署、共享模型服务、资源调度、工具执行可靠性、状态隔离与可观测性。
-
-后续优化围绕缓存感知调度、固定轨迹回放、TTFT/TPOT及尾延迟测量展开。当前24.59版本作为冻结基线，便于对照后续改动。
-
-## 上游项目与依赖
-
-- [Tufa Labs Duck harness](https://github.com/Tufalabs/duck-harness)，原 Notebook 标注的 patch 基线为 `7652836`。
-- [Daniel Franzen ARC-AGI-3 solution](https://github.com/da-fr/arc-agi-3-solution)。
-- [Pennyroyal / SGLang RTX PRO 6000](https://github.com/jpezzulli/sglang-rtxpro6000)，v2.5.3，原 Notebook 标注 commit `d00d88efc8d6281b12be4f4073126aec95038c55`。
-- [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) 与 [Intel AutoRound W4A16 checkpoint](https://huggingface.co/Intel/Qwen3.8-Flash-Next-W4A16-AutoRound)。
-- Albucino MTP draft checkpoint；相关推理补丁来自 [Mamy Ratsimbazafy](https://github.com/mratsim/sglang-qwen38fn-sm120-turbo) 与 [Gabriel Olympie](https://github.com/gabrielolympie/sglang-flashnext-sm120)。
-
-第三方源码、模型权重及数据遵循各自许可证。
+**作者：陈守杰 · Shoujie Chen**
