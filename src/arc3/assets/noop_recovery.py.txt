@@ -1,0 +1,161 @@
+
+
+
+# === ARC3 v9.1: no-op recovery from real _execute_action outcomes ===
+# The action registry is populated by the experiment harness after each real action.
+# This patch only reads that registry before a normal model prompt.
+# No automatic actions, no RESET, no global verification.
+
+_ARC3_NOOP_ACTION_REGISTRY = globals().get("_ARC3_NOOP_ACTION_REGISTRY", {})
+
+
+def _arc3_v91_env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _arc3_v91_env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _arc3_v91_env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _arc3_v91_trigger_metrics(entry: dict[str, Any]) -> dict[str, Any]:
+    events = list(entry.get("events") or [])
+    window = max(8, _arc3_v91_env_int("ARC3_NOOP_WINDOW_ACTIONS", 24))
+    recent = events[-window:]
+
+    noops = sum(bool(e.get("no_op")) for e in recent)
+    changed = sum(e.get("gameplay_changed") is True for e in recent)
+    return {
+        "actions_in_level": len(events),
+        "window_actions": len(recent),
+        "recent_noops": noops,
+        "recent_noop_ratio": round(noops / len(recent), 4) if recent else 0.0,
+        "recent_gameplay_changed": changed,
+        "latest_action_num": recent[-1].get("action_num") if recent else None,
+    }
+
+
+def _arc3_v91_should_trigger(entry: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    metrics = _arc3_v91_trigger_metrics(entry)
+
+    min_level_actions = max(
+        1, _arc3_v91_env_int("ARC3_NOOP_MIN_LEVEL_ACTIONS", 24)
+    )
+    min_window_actions = max(
+        1, _arc3_v91_env_int("ARC3_NOOP_MIN_WINDOW_ACTIONS", 16)
+    )
+    min_noops = max(
+        1, _arc3_v91_env_int("ARC3_NOOP_MIN_RECENT_NOOPS", 4)
+    )
+    min_ratio = _arc3_v91_env_float(
+        "ARC3_NOOP_MIN_RATIO", 0.18
+    )
+
+    if metrics["actions_in_level"] < min_level_actions:
+        return False, metrics
+    if metrics["window_actions"] < min_window_actions:
+        return False, metrics
+    if metrics["recent_noops"] < min_noops:
+        return False, metrics
+    if metrics["recent_noop_ratio"] < min_ratio:
+        return False, metrics
+
+    events = list(entry.get("events") or [])
+    if events and bool(events[-1].get("game_over")):
+        return False, metrics
+
+    return True, metrics
+
+
+if not getattr(ToolAgent, "_arc3_noop_recovery_v91_installed", False):
+    _arc3_v91_original_build_user_prompt = ToolAgent._build_user_prompt
+
+    def _arc3_v91_build_user_prompt(self, *args: Any, **kwargs: Any) -> str:
+        prompt = _arc3_v91_original_build_user_prompt(self, *args, **kwargs)
+
+        if not _arc3_v91_env_bool("ARC3_NOOP_RECOVERY_V91", False):
+            return prompt
+
+        try:
+            diag_name = str(getattr(self, "_diag_name", "") or "")
+            if not diag_name:
+                return prompt
+
+            registry = globals().get("_ARC3_NOOP_ACTION_REGISTRY", {}) or {}
+            entry = registry.get(diag_name)
+            if not isinstance(entry, dict):
+                return prompt
+
+            level = entry.get("level")
+            triggered = getattr(self, "_arc3_v91_triggered_levels", None)
+            if not isinstance(triggered, set):
+                triggered = set()
+                self._arc3_v91_triggered_levels = triggered
+
+            # Hidden-game hardening: one ToolAgent/dispatch slot may serve
+            # multiple games. Key the one-shot memory by real game session + level.
+            session_key = str(entry.get("session_key") or "")
+            level_key = f"{session_key}|level={level}" if session_key else str(level)
+            if level_key in triggered:
+                return prompt
+
+            should_trigger, metrics = _arc3_v91_should_trigger(entry)
+            if not should_trigger:
+                return prompt
+
+            triggered.add(level_key)
+
+            checkpoint_events = getattr(self, "_strategy_checkpoint_events", None)
+            if not isinstance(checkpoint_events, list):
+                checkpoint_events = []
+                self._strategy_checkpoint_events = checkpoint_events
+
+            checkpoint_events.append({
+                "stage": 1,
+                "level": level,
+                "action_num": metrics.get("latest_action_num"),
+                "actions_in_level": metrics.get("actions_in_level"),
+                "trigger_mode": "noop_recovery_v91_real_action",
+                "trigger_reasons": ["high_recent_real_noop_rate"],
+                "trigger_metrics": metrics,
+            })
+
+            suffix = (
+                "INEFFECTIVE-ACTION CHECKPOINT: a substantial fraction of your "
+                "recent REAL attempted actions in this level produced no effect. "
+                "Do not become globally conservative and do not RESET solely because "
+                "of this checkpoint. Stop repeating the ineffective action family. "
+                "Re-ground from the current frame and the observed action effects, "
+                "infer why those attempted actions were invalid here, and try one "
+                "materially different executable probe. Preserve facts that were "
+                "directly observed and continue exploring."
+            )
+
+            try:
+                log.warning(
+                    "v9.1 noop recovery checkpoint diag=%s level=%s metrics=%s",
+                    diag_name, level, metrics
+                )
+            except Exception:
+                pass
+
+            return f"{prompt}\n{suffix}" if isinstance(prompt, str) else prompt
+
+        except Exception:
+            return prompt
+
+    ToolAgent._build_user_prompt = _arc3_v91_build_user_prompt
+    ToolAgent._arc3_noop_recovery_v91_installed = True
+# === end ARC3 v9.1 ===
