@@ -1,0 +1,20 @@
+{
+  "source_version": "357355935",
+  "source_notebook": "notebook5fa958a77c",
+  "source_sha256": "c4ad65bae6269837d2cdcbe6bb311c820fcb35ba969728fac4a9c49a8ce904e8",
+  "evaluation": "offline-public25",
+  "games": 25,
+  "wins": 7,
+  "win_rate": 0.28,
+  "completed_levels": 104,
+  "total_levels": 183,
+  "mean_score": 46.39084599027885,
+  "duration_s": 7329,
+  "job_generated_tokens": 4425369,
+  "job_generated_tokens_per_second": 603.78,
+  "actor_prompt_tokens": 177449853,
+  "actor_cached_tokens": 167219712,
+  "actor_cached_token_fraction": 0.9423491153864185,
+  "actor_uncached_prompt_tokens": 10230141,
+  "measurement_note": "Historical project run; source snapshot for modular code: 356766364. Throughput uses job wallclock; cache fraction uses actor request tokens."
+}
