@@ -1,0 +1,47 @@
+{
+  "run": {
+    "DEV_MODE": "smoke",
+    "SUBMISSION_PROFILE": "noop_recovery_v91",
+    "DEV_PROFILES": [
+      "noop_recovery_v91"
+    ],
+    "DEV_GAME_PREFIXES": [
+      "lf52"
+    ],
+    "DEV_MINUTES_PER_ARM": 5,
+    "DEV_REPEATS": 1,
+    "DEV_ACTIVE_STREAMS": 1,
+    "DEV_SAVE_REQUEST_LOGS": false,
+    "DEV_FULL_PROFILE": "noop_recovery_v91"
+  },
+  "paths": {
+    "wheelhouse": "/kaggle/input/datasets/dfranzen/pennyroyal-v253",
+    "model": "/kaggle/input/models/dfranzen/intel-qwen3.8-flash-next-w4a16-autoround/transformers/default/1",
+    "draft_model": "/kaggle/input/models/dfranzen/albucino-qwen3-8-flash-next-drafter/transformers/default/1",
+    "source_bundle": "/kaggle/input/datasets/dfranzen/taaf-kaggle-source-bundle-copy",
+    "working": "/kaggle/working",
+    "bundle_work": "/kaggle/taaf-kaggle-source-share"
+  },
+  "inference": {
+    "CTX": 139264,
+    "MEMFRAC": 0.96,
+    "MAXREQ": 10,
+    "CUDAGRAPH_MAXBS": 10,
+    "MAMBA_CACHE": 60,
+    "CHUNK": 8192,
+    "MAX_PREFILL": 16384,
+    "SPEC": true,
+    "FRSPEC": true,
+    "AUTOTUNE": true,
+    "PREFETCH_CHECKPOINTS": true,
+    "DROP_CACHE_AFTER_LOAD": true,
+    "LINEAR_BACKEND": "flashinfer",
+    "KVDTYPE": "fp8_e4m3",
+    "SSM_DTYPE": "bfloat16",
+    "MAMBA_RADIX": "extra_buffer",
+    "GDN_MTP_CACHE_MODE": "none",
+    "SPEC_ACCEPT_SINGLE": 1.0,
+    "SPEC_ACCEPT_ACC": 1.0,
+    "SPEC_STEPS": 3
+  }
+}
