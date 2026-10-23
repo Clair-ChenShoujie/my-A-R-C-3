@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arc3-agent-infra"
+version = "0.1.0"
+description = "Single-GPU offline inference and runtime for long-horizon ARC3 agents"
+requires-python = ">=3.12"
+authors = [{name = "Shoujie Chen"}]
+
+[project.scripts]
+arc3 = "arc3.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+arc3 = ["assets/*"]
