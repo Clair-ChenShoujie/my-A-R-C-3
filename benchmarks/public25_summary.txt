@@ -1,0 +1,43 @@
+benchmark: duck-harness-kaggle
+solver:    duck-harness
+games:     25
+passes:    1
+runs:      25 (won: 7)
+started:   2026-10-11 13:20:44
+ended:     2026-10-11 15:22:53
+duration:  2h 2m 9s
+mean score:    46.39
+median score:  41.66
+total actions: 5833
+total tokens:  4425369
+generated tokens/sec: 603.78 (job wallclock)
+total wallclock: 160436.0s
+
+per-game (mean across passes):
+  ar25-0c556536: score=100.00, levels=8.0/8, actions=361, tokens=159230
+  bp35-0a0ad940: score=5.35, levels=2.0/9, actions=111, tokens=250103
+  cd82-fb555c5d: score=0.00, levels=0.0/6, actions=101, tokens=109811
+  cn04-2fe56bfb: score=71.43, levels=5.0/6, actions=265, tokens=328910
+  dc22-fdcac232: score=43.57, levels=4.0/6, actions=331, tokens=290507
+  ft09-0d8bbf25: score=100.00, levels=6.0/6, actions=95, tokens=90068
+  g50t-5849a774: score=2.17, levels=1.0/7, actions=115, tokens=145302
+  ka59-38d34dbb: score=49.15, levels=5.0/7, actions=495, tokens=219658
+  lf52-271a04aa: score=1.82, levels=1.0/10, actions=139, tokens=120503
+  lp85-305b61c3: score=100.00, levels=8.0/8, actions=104, tokens=114861
+  ls20-9607627b: score=21.87, levels=4.0/7, actions=539, tokens=239142
+  m0r0-492f87ba: score=100.00, levels=6.0/6, actions=290, tokens=203972
+  r11l-495a7899: score=98.92, levels=6.0/6, actions=159, tokens=181757
+  re86-8af5384d: score=41.66, levels=5.0/8, actions=441, tokens=129671
+  s5i5-18d95033: score=27.78, levels=4.0/8, actions=164, tokens=235059
+  sb26-7fbdac44: score=100.00, levels=8.0/8, actions=138, tokens=38551
+  sc25-635fd71a: score=71.43, levels=5.0/6, actions=313, tokens=155239
+  sk48-d8078629: score=2.78, levels=1.0/8, actions=58, tokens=130448
+  sp80-589a99af: score=4.76, levels=1.0/6, actions=40, tokens=134764
+  su15-1944f8ab: score=12.36, levels=3.0/9, actions=142, tokens=181457
+  tn36-ef4dde99: score=0.27, levels=1.0/7, actions=230, tokens=144796
+  tr87-cd924810: score=93.34, levels=6.0/6, actions=424, tokens=187175
+  tu93-0768757b: score=76.82, levels=8.0/9, actions=219, tokens=317550
+  vc33-5430563c: score=20.97, levels=3.0/7, actions=117, tokens=127816
+  wa30-ee6fef47: score=13.33, levels=3.0/9, actions=442, tokens=189019
+
+diagnostics: /kaggle/working/diagnostics.html
